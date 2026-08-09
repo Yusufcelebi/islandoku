@@ -71,6 +71,31 @@
     box-shadow:0 20px 50px rgba(0,0,0,.45), inset 0 0 0 1px rgba(217,164,65,.25);
     touch-action:none;
   }
+  .cover-overlay{
+    position:absolute;
+    inset:18px;
+    background:rgba(244,234,217,.94);
+    backdrop-filter:blur(6px);
+    -webkit-backdrop-filter:blur(6px);
+    border-radius:6px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    z-index:10;
+    cursor:pointer;
+    transition:opacity .25s ease;
+  }
+  .cover-overlay.hidden{
+    display:none;
+  }
+  .cover-msg{
+    font-family:'Fraunces', serif;
+    font-weight:700;
+    font-size:20px;
+    text-align:center;
+    color:var(--sand-ink);
+    line-height:1.6;
+  }
   svg{ display:block; border-radius:6px; overflow:visible; width:100%; height:auto; max-width:600px; }
   .stage{ width:100%; max-width:636px; }
   .cell-land{ stroke:rgba(43,32,19,.35); stroke-width:1; cursor:pointer; }
@@ -117,6 +142,22 @@
     color:var(--foam);
     border:1px solid rgba(191,227,238,.4);
     box-shadow:none;
+  }
+  button.start-btn{
+    background:var(--ok);
+    color:#0c2a19;
+    box-shadow:0 4px 14px rgba(74,156,109,.4);
+  }
+  button.start-btn.running{
+    background:var(--bad);
+    color:#2a0e0a;
+    box-shadow:0 4px 14px rgba(193,80,63,.4);
+  }
+  button:disabled{
+    opacity:.4;
+    cursor:not-allowed;
+    transform:none !important;
+    box-shadow:none !important;
   }
   .numpad{
     margin-top:16px;
@@ -217,11 +258,16 @@
 
 <div class="stage">
   <svg id="board" width="600" height="600" viewBox="0 0 600 600"></svg>
+  <div class="cover-overlay" id="coverOverlay">
+    <div class="cover-msg">🏝️<br>Hazır olduğunda<br><b>Başla</b>'ya bas</div>
+  </div>
 </div>
 
 <div class="numpad" id="numpad"></div>
 
 <div class="controls">
+  <button id="startBtn" class="start-btn">▶ Başla</button>
+  <button id="hintBtn" class="secondary">💡 İpucu (5)</button>
   <button id="checkBtn">Kontrol et</button>
   <button id="solveBtn" class="secondary">Çözümü göster</button>
   <button id="clearBtn" class="secondary">Girdiklerimi temizle</button>
@@ -261,6 +307,7 @@ const islandPalette = [
 // user fill state: null = empty, number = user-entered value
 let userFill = [];
 let badCells = new Set(); // "r,c" currently showing red
+let hintCells = new Set(); // "r,c" revealed via hint — locked like clues
 
 let selected = null; // [r,c]
 let showingSolution = false;
@@ -268,17 +315,44 @@ let mode = 'easy'; // 'easy' | 'hard'
 let mistakes = 0;
 const MAX_MISTAKES = 5;
 let locked = false;
+let started = false;
+let hintsUsed = 0;
+const HINT_LIMITS = { easy: 5, hard: 3 };
 
 function resetState(){
   userFill = [];
   for(let r=0;r<N;r++){ userFill.push(new Array(N).fill(null)); }
   badCells = new Set();
+  hintCells = new Set();
   selected = null;
   showingSolution = false;
   mistakes = 0;
   locked = false;
+  hintsUsed = 0;
+  started = false;
   document.getElementById('solveBtn').textContent = 'Çözümü göster';
   updateMistakeDisplay();
+  updateHintDisplay();
+  updateCover();
+}
+
+function hintLimit(){ return HINT_LIMITS[mode]; }
+function hintsLeft(){ return Math.max(0, hintLimit() - hintsUsed); }
+
+function updateHintDisplay(){
+  const btn = document.getElementById('hintBtn');
+  const left = hintsLeft();
+  btn.textContent = `💡 İpucu (${left})`;
+  btn.disabled = left<=0 || !started || locked;
+}
+
+function updateCover(){
+  const overlay = document.getElementById('coverOverlay');
+  const startBtn = document.getElementById('startBtn');
+  overlay.classList.toggle('hidden', started);
+  startBtn.textContent = started ? '⏸ Durdur' : '▶ Başla';
+  startBtn.classList.toggle('running', started);
+  updateHintDisplay();
 }
 
 function updateMistakeDisplay(){
@@ -292,12 +366,16 @@ function setMode(newMode){
   document.getElementById('hardBtn').classList.toggle('active', mode==='hard');
   mistakes = 0;
   locked = false;
+  hintsUsed = 0;
   updateMistakeDisplay();
-  setStatus(mode==='hard' ? 'Zor mod aktif — 5 hakkın var, dikkatli ol!' : 'Kolay mod aktif.', '');
+  updateHintDisplay();
+  setStatus(mode==='hard' ? 'Zor mod aktif — 5 hata hakkın, 3 ipucun var.' : 'Kolay mod aktif — 5 ipucun var.', '');
 }
 
 function ns(tag){ return document.createElementNS('http://www.w3.org/2000/svg', tag); }
 function isClue(r,c){ return DATA.puzzle[r][c] !== 0; }
+function isHinted(r,c){ return hintCells.has(`${r},${c}`); }
+function isLocked(r,c){ return isClue(r,c) || isHinted(r,c); }
 function isLand(r,c){ return DATA.grid[r][c] === 1; }
 
 function setStatus(msg, kind){
@@ -307,15 +385,30 @@ function setStatus(msg, kind){
 }
 
 function selectCell(r,c){
-  if(locked || !isLand(r,c) || isClue(r,c)) return;
+  if(!started || locked || !isLand(r,c) || isLocked(r,c)) return;
   selected = [r,c];
   render();
 }
 
-function enterDigit(v){
-  if(!selected || locked) return;
+function useHint(){
+  if(!started || locked) return;
+  if(hintsLeft()<=0){ setStatus('İpucu hakkın kalmadı.', 'bad'); return; }
+  if(!selected){ setStatus('Önce ipucu istediğin kutuyu seç.', ''); return; }
   const [r,c] = selected;
-  if(isClue(r,c)) return;
+  if(isLocked(r,c)) return;
+  userFill[r][c] = DATA.solution[r][c];
+  badCells.delete(`${r},${c}`);
+  hintCells.add(`${r},${c}`);
+  hintsUsed++;
+  updateHintDisplay();
+  setStatus(`İpucu kullanıldı. Kalan ipucu: ${hintsLeft()}`, '');
+  render();
+}
+
+function enterDigit(v){
+  if(!started || !selected || locked) return;
+  const [r,c] = selected;
+  if(isLocked(r,c)) return;
 
   if(v===0){
     badCells.delete(`${r},${c}`);
@@ -346,13 +439,13 @@ function enterDigit(v){
 }
 
 function moveSelection(dr,dc){
-  if(!selected || locked) return;
+  if(!started || !selected || locked) return;
   let [r,c] = selected;
   for(let step=0; step<N; step++){
     r += dr; c += dc;
     if(r<0||r>=N||c<0||c>=N) return;
-    if(isLand(r,c) && !isClue(r,c)){ selected=[r,c]; render(); return; }
-    if(isLand(r,c) && isClue(r,c)){ continue; } // skip clues but keep scanning
+    if(isLand(r,c) && !isLocked(r,c)){ selected=[r,c]; render(); return; }
+    if(isLand(r,c) && isLocked(r,c)){ continue; } // skip clues/hints but keep scanning
   }
 }
 
@@ -403,9 +496,12 @@ function render(){
       let cls = 'digit-user';
       if(showingSolution){
         val = DATA.solution[r][c];
-        cls = isClue(r,c) ? 'digit-clue' : 'digit-user';
+        cls = isLocked(r,c) ? 'digit-clue' : 'digit-user';
       } else if(isClue(r,c)){
         val = DATA.puzzle[r][c];
+        cls = 'digit-clue';
+      } else if(isHinted(r,c)){
+        val = userFill[r][c];
         cls = 'digit-clue';
       } else if(userFill[r][c]){
         val = userFill[r][c];
@@ -486,7 +582,7 @@ function buildNumpad(){
 }
 
 window.addEventListener('keydown', (e)=>{
-  if(showingSolution || locked) return;
+  if(!started || showingSolution || locked) return;
   if(e.key >= '1' && e.key <= '9'){ enterDigit(parseInt(e.key)); e.preventDefault(); }
   else if(e.key === 'Backspace' || e.key === 'Delete' || e.key === '0'){ enterDigit(0); e.preventDefault(); }
   else if(e.key === 'ArrowUp'){ moveSelection(-1,0); e.preventDefault(); }
@@ -496,6 +592,7 @@ window.addEventListener('keydown', (e)=>{
 });
 
 document.getElementById('checkBtn').addEventListener('click', ()=>{
+  if(!started) return;
   badCells.clear();
   let filled = 0, correct = 0, total = 0;
   for(let r=0;r<N;r++){
@@ -517,18 +614,25 @@ document.getElementById('checkBtn').addEventListener('click', ()=>{
 });
 
 document.getElementById('solveBtn').addEventListener('click', ()=>{
+  if(!started) return;
   showingSolution = !showingSolution;
   document.getElementById('solveBtn').textContent = showingSolution ? 'Kendi çözümüne dön' : 'Çözümü göster';
   setStatus(showingSolution ? 'Tam çözüm gösteriliyor.' : '', '');
   render();
 });
 
+document.getElementById('hintBtn').addEventListener('click', useHint);
+
 document.getElementById('clearBtn').addEventListener('click', ()=>{
+  if(!started) return;
   for(let r=0;r<N;r++) for(let c=0;c<N;c++) userFill[r][c]=null;
   badCells.clear();
+  hintCells.clear();
   mistakes = 0;
   locked = false;
+  hintsUsed = 0;
   updateMistakeDisplay();
+  updateHintDisplay();
   setStatus('Girdiklerin temizlendi.', '');
   render();
 });
@@ -544,8 +648,28 @@ document.getElementById('newBtn').addEventListener('click', ()=>{
   }
   DATA = ALL_BOARDS[boardIndex];
   resetState();
-  setStatus(`Yeni bulmaca (${boardIndex+1}/${ALL_BOARDS.length}) yüklendi.`, '');
+  setStatus(`Yeni bulmaca (${boardIndex+1}/${ALL_BOARDS.length}) yüklendi. Başlamak için "Başla"ya bas.`, '');
   render();
+});
+
+document.getElementById('startBtn').addEventListener('click', ()=>{
+  started = !started;
+  updateCover();
+  if(started){
+    setStatus('Bulmaca açıldı, iyi eğlenceler!', '');
+  } else {
+    setStatus('Duraklatıldı. Devam etmek için "Başla"ya bas.', '');
+  }
+  render();
+});
+
+document.getElementById('coverOverlay').addEventListener('click', ()=>{
+  if(!started){
+    started = true;
+    updateCover();
+    setStatus('Bulmaca açıldı, iyi eğlenceler!', '');
+    render();
+  }
 });
 
 resetState();
