@@ -18,6 +18,7 @@
     --gold:#d9a441;
     --line-strong:#1b1408;
     --ok:#4a9c6d;
+    --hint:#9b59b6;
     --bad:#c1503f;
     --select:#2e86c1;
   }
@@ -112,6 +113,7 @@
   .digit-clue{ fill:#20160a; }
   .digit-user{ fill:#1c4d8a; }
   .digit-bad{ fill:var(--bad); }
+  .digit-hint{ fill:var(--hint); }
   .sel-ring{ fill:none; stroke:var(--select); stroke-width:3; pointer-events:none; }
   .controls{
     margin-top:20px;
@@ -316,6 +318,7 @@ let mistakes = 0;
 const MAX_MISTAKES = 5;
 let locked = false;
 let started = false;
+let modeLocked = false;
 let hintsUsed = 0;
 const HINT_LIMITS = { easy: 5, hard: 3 };
 
@@ -330,9 +333,11 @@ function resetState(){
   locked = false;
   hintsUsed = 0;
   started = false;
+  modeLocked = false;
   document.getElementById('solveBtn').textContent = 'Çözümü göster';
   updateMistakeDisplay();
   updateHintDisplay();
+  updateModeButtons();
   updateCover();
 }
 
@@ -344,6 +349,11 @@ function updateHintDisplay(){
   const left = hintsLeft();
   btn.textContent = `💡 İpucu (${left})`;
   btn.disabled = left<=0 || !started || locked;
+}
+
+function updateModeButtons(){
+  document.getElementById('easyBtn').disabled = modeLocked;
+  document.getElementById('hardBtn').disabled = modeLocked;
 }
 
 function updateCover(){
@@ -361,6 +371,7 @@ function updateMistakeDisplay(){
 }
 
 function setMode(newMode){
+  if(modeLocked) return;
   mode = newMode;
   document.getElementById('easyBtn').classList.toggle('active', mode==='easy');
   document.getElementById('hardBtn').classList.toggle('active', mode==='hard');
@@ -393,9 +404,16 @@ function selectCell(r,c){
 function useHint(){
   if(!started || locked) return;
   if(hintsLeft()<=0){ setStatus('İpucu hakkın kalmadı.', 'bad'); return; }
-  if(!selected){ setStatus('Önce ipucu istediğin kutuyu seç.', ''); return; }
-  const [r,c] = selected;
-  if(isLocked(r,c)) return;
+  const candidates = [];
+  for(let r=0;r<N;r++){
+    for(let c=0;c<N;c++){
+      if(isLand(r,c) && !isLocked(r,c) && userFill[r][c] !== DATA.solution[r][c]){
+        candidates.push([r,c]);
+      }
+    }
+  }
+  if(candidates.length===0){ setStatus('Doldurulacak kutu kalmadı.', ''); return; }
+  const [r,c] = candidates[Math.floor(Math.random()*candidates.length)];
   userFill[r][c] = DATA.solution[r][c];
   badCells.delete(`${r},${c}`);
   hintCells.add(`${r},${c}`);
@@ -496,13 +514,13 @@ function render(){
       let cls = 'digit-user';
       if(showingSolution){
         val = DATA.solution[r][c];
-        cls = isLocked(r,c) ? 'digit-clue' : 'digit-user';
+        cls = isClue(r,c) ? 'digit-clue' : (isHinted(r,c) ? 'digit-hint' : 'digit-user');
       } else if(isClue(r,c)){
         val = DATA.puzzle[r][c];
         cls = 'digit-clue';
       } else if(isHinted(r,c)){
         val = userFill[r][c];
-        cls = 'digit-clue';
+        cls = 'digit-hint';
       } else if(userFill[r][c]){
         val = userFill[r][c];
         cls = badCells.has(`${r},${c}`) ? 'digit-bad' : 'digit-user';
@@ -609,7 +627,11 @@ document.getElementById('checkBtn').addEventListener('click', ()=>{
   }
   render();
   if(filled===0){ setStatus('Henüz hiç sayı girmedin.', 'warn'); }
-  else if(correct===total && filled===total){ setStatus('🎉 Tebrikler, bulmaca doğru çözüldü!', 'ok'); }
+  else if(correct===total && filled===total){
+    modeLocked = false;
+    updateModeButtons();
+    setStatus('🎉 Tebrikler, bulmaca doğru çözüldü! Mod seçimi tekrar açıldı.', 'ok');
+  }
   else { setStatus(`${filled}/${total} dolduruldu, ${filled-correct} hatalı kutu kırmızıyla işaretlendi.`, badCells.size?'bad':'warn'); }
 });
 
@@ -648,12 +670,16 @@ document.getElementById('newBtn').addEventListener('click', ()=>{
   }
   DATA = ALL_BOARDS[boardIndex];
   resetState();
-  setStatus(`Yeni bulmaca (${boardIndex+1}/${ALL_BOARDS.length}) yüklendi. Başlamak için "Başla"ya bas.`, '');
+  setStatus(`Yeni bulmaca yüklendi. Başlamak için "Başla"ya bas.`, '');
   render();
 });
 
 document.getElementById('startBtn').addEventListener('click', ()=>{
   started = !started;
+  if(started){
+    modeLocked = true;
+    updateModeButtons();
+  }
   updateCover();
   if(started){
     setStatus('Bulmaca açıldı, iyi eğlenceler!', '');
@@ -666,6 +692,8 @@ document.getElementById('startBtn').addEventListener('click', ()=>{
 document.getElementById('coverOverlay').addEventListener('click', ()=>{
   if(!started){
     started = true;
+    modeLocked = true;
+    updateModeButtons();
     updateCover();
     setStatus('Bulmaca açıldı, iyi eğlenceler!', '');
     render();
